@@ -9,6 +9,9 @@ session = requests.Session()
 
 
 def fetch_canvas_action_log(session, canvas_url, course_id, quiz_id, quiz_submission_id):
+    """
+    Fetches the action log events for a specific quiz submission.
+    """
     api_url = f"{canvas_url}/api/v1/courses/{course_id}/quizzes/{quiz_id}/submissions/{quiz_submission_id}/events"
     try:
         response = session.get(api_url)
@@ -20,6 +23,9 @@ def fetch_canvas_action_log(session, canvas_url, course_id, quiz_id, quiz_submis
 
 
 def fetch_quiz_submissions_for_user(session, canvas_url, course_id, quiz_id, user_id):
+    """
+    Fetches all quiz submissions for a given user.
+    """
     api_url = f"{canvas_url}/api/v1/courses/{course_id}/quizzes/{quiz_id}/submissions"
     params = {'user_id': user_id, 'per_page': 100}
     try:
@@ -32,6 +38,9 @@ def fetch_quiz_submissions_for_user(session, canvas_url, course_id, quiz_id, use
 
 
 def fetch_course_enrollments(session, canvas_url, course_id):
+    """
+    Fetches student enrollments for a course.
+    """
     api_url = f"{canvas_url}/api/v1/courses/{course_id}/enrollments"
     params = {'type[]': 'StudentEnrollment', 'per_page': 100, 'include[]': 'user'}
     students_info = []
@@ -39,7 +48,8 @@ def fetch_course_enrollments(session, canvas_url, course_id):
         response = session.get(api_url, params=params)
         response.raise_for_status()
         for enrollment in response.json():
-            if enrollment.get('role') == 'StudentEnrollment':
+            # Check if the role is 'StudentEnrollment' and extract user info
+            if enrollment.get('type') == 'StudentEnrollment' or enrollment.get('role') == 'StudentEnrollment':
                 user = enrollment.get('user', {})
                 students_info.append({'id': enrollment['user_id'], 'name': user.get('name', 'N/A')})
     except Exception as e:
@@ -48,6 +58,9 @@ def fetch_course_enrollments(session, canvas_url, course_id):
 
 
 def format_event_description(event):
+    """
+    Creates a human-readable description for a quiz event.
+    """
     event_type = event.get('event_type')
     desc = event.get('description', '')
     data = event.get('data', {})
@@ -65,8 +78,14 @@ def format_event_description(event):
 
 
 def process_student_submissions(student_info):
+    """
+    Processes all submissions for a student and returns a list of unique events.
+    """
     student_id, student_name = student_info['id'], student_info['name']
     results = []
+    # Keep track of the last processed event to skip duplicates
+    last_event_key = None
+    
     submissions = fetch_quiz_submissions_for_user(session, CANVAS_BASE_URL, COURSE_ID, QUIZ_ID, student_id)
     for sub in submissions:
         submission_id = sub.get('id')
@@ -74,29 +93,45 @@ def process_student_submissions(student_info):
             continue
         events = fetch_canvas_action_log(session, CANVAS_BASE_URL, COURSE_ID, QUIZ_ID, submission_id)
         events.sort(key=lambda e: e.get('created_at', ''))
+
         for event in events:
             ts = event.get('created_at', '')
             try:
                 time = datetime.fromisoformat(ts.replace('Z', '+00:00')).strftime("%H:%M")
             except:
                 time = 'N/A'
-            results.append({
-                'student_id': student_id,
-                'student_name': student_name,
-                'submission_id': submission_id,
-                'timestamp_hh_mm': time,
-                'action_description': format_event_description(event),
-                'raw_event_type': event.get('event_type', 'N/A'),
-                'raw_description': event.get('description', ''),
-                'user_agent': event.get('user_agent', ''),
-                'url': event.get('url', ''),
-                'full_event_json': json.dumps(event, separators=(',', ':'))
-            })
+            
+            action_description = format_event_description(event)
+            raw_event_type = event.get('event_type', 'N/A')
+
+            # Create a tuple of key attributes for comparison
+            current_event_key = (submission_id, time, action_description, raw_event_type)
+
+            # Only append the event if it's not a duplicate of the last one
+            if current_event_key != last_event_key:
+                results.append({
+                    'student_id': student_id,
+                    'student_name': student_name,
+                    'submission_id': submission_id,
+                    'timestamp_hh_mm': time,
+                    'action_description': action_description,
+                    'raw_event_type': raw_event_type,
+                    'raw_description': event.get('description', ''),
+                    'user_agent': event.get('user_agent', ''),
+                    'url': event.get('url', ''),
+                    'full_event_json': json.dumps(event, separators=(',', ':'))
+                })
+                # Update the last event key
+                last_event_key = current_event_key
+
     return results
 
 
 def save_all_events_to_single_csv(filename, events):
-    header = ["Student ID", "Student Name", "Submission ID", "Timestamp", "Action", "Raw Event Type", "Raw Description", "User Agent", "URL"] #"Full Event Data"]
+    """
+    Saves a list of event dictionaries to a single CSV file.
+    """
+    header = ["Student ID", "Student Name", "Submission ID", "Timestamp", "Action", "Raw Event Type", "Raw Description", "User Agent", "URL"]
     try:
         with open(filename, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=header)
@@ -112,7 +147,6 @@ def save_all_events_to_single_csv(filename, events):
                     "Raw Description": e['raw_description'],
                     "User Agent": e['user_agent'],
                     "URL": e['url']
-                    
                 })
         print(f"Saved all events to '{filename}'")
     except Exception as e:
@@ -123,7 +157,7 @@ if __name__ == "__main__":
     CANVAS_BASE_URL = "https://uc-bcf.instructure.com"
     CANVAS_ACCESS_TOKEN = "16936~DvJ2JLZx4rkCWXXrmJTcYAMLncwAFBt97wAM9HMHMckfAfaa9t4R3BQcJZMurDkE"
 
-    #Attach token to session
+    # Attach token to session
     session.headers.update({"Authorization": f"Bearer {CANVAS_ACCESS_TOKEN}", "Content-Type": "application/json"})
 
     try:
@@ -140,6 +174,7 @@ if __name__ == "__main__":
     print(f"Found {len(students)} students.")
 
     all_events = []
+    # Use a ThreadPoolExecutor for concurrent fetching
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_student_submissions, s) for s in students]
         for f in as_completed(futures):
